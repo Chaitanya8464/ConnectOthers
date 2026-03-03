@@ -1,0 +1,102 @@
+package com.blink.chatservice.security;
+
+import com.blink.chatservice.ratelimit.RateLimitFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.http.HttpMethod;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
+
+import jakarta.servlet.DispatcherType;
+import java.util.Collections;
+
+
+@Configuration
+@EnableWebSecurity
+@RequiredArgsConstructor
+public class SecurityConfig {
+
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RateLimitFilter rateLimitFilter;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http, CorsConfigurationSource corsConfigurationSource) throws Exception {
+        http
+                // Disabling CSRF because we use stateless JWT authentication, so browser CSRF attacks are not a concern.
+                .csrf(AbstractHttpConfigurer::disable)
+                // Enable CORS in Spring Security (portable across cloud providers / reverse proxies).
+                .cors(cors -> cors.configurationSource(corsConfigurationSource))
+                // No server-side sessions, fully stateless.
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                )
+                .headers(headers -> headers
+                        // Disable Spring Sec default X-Frame-Options to allow cross-origin framing for SockJS.
+                        // Framing security is now strictly controlled via CSP frame-ancestors.
+                        .frameOptions(frameOptions -> frameOptions.disable())
+                        .httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(31536000))
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives("default-src 'self'; script-src 'self' 'unsafe-inline' https://api.blinxai.me; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https://r2cdn.perplexity.ai; frame-ancestors 'self' https://blinxai.me https://www.blinxai.me https://blinx-app.netlify.app; connect-src 'self' ws: wss: https: https://api.blinxai.me;")
+                        )
+                )
+                .authorizeHttpRequests(auth -> auth
+                        // Always allow browser CORS preflight to pass through security.
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        .requestMatchers(
+                                "/api/v1/auth/**",
+                                "/mcp/**",
+                                "/v3/api-docs/**",
+                                "/swagger-ui/**",
+                                "/swagger-ui.html",
+                                "/swagger-ui/index.html",
+                                "/actuator/**",
+                                // Allowing public access to ws handshake, socket security is handled separately.
+                                "/ws/**",
+                                "/api/v1/ws/**"
+                        ).permitAll()
+                        .anyRequest().authenticated()
+                )
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // Rate-limit filter runs after JWT authentication so it can use the principal
+                .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class);
+        return http.build();
+    }
+
+    // Ensure CORS headers are present on all responses (including 401/403), regardless of cloud/router behavior.
+    // Uses the existing {@link CorsConfigurationSource} defined in {@code com.blink.chatservice.config.CorsConfig}.
+    @Bean
+    public FilterRegistrationBean<CorsFilter> corsFilterRegistration(CorsConfigurationSource corsConfigurationSource) {
+        CorsFilter corsFilter = new CorsFilter(corsConfigurationSource);
+        FilterRegistrationBean<CorsFilter> registration = new FilterRegistrationBean<>(corsFilter);
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setDispatcherTypes(DispatcherType.REQUEST, DispatcherType.ERROR, DispatcherType.ASYNC);
+        return registration;
+    }
+
+    // Prevent the servlet container from also registering the rate-limit filter
+    // (it's already wired into the Spring Security filter chain above).
+    @Bean
+    public FilterRegistrationBean<RateLimitFilter> rateLimitFilterRegistration(RateLimitFilter filter) {
+        FilterRegistrationBean<RateLimitFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        return new InMemoryUserDetailsManager(Collections.emptyList());
+    }
+}

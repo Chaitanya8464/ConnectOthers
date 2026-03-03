@@ -1,0 +1,239 @@
+spring:
+  application:
+    name: blinxAI
+
+  # MEMORY FIX: Removed lazy-initialization. With lazy-init, beans are created
+  # on-demand which causes gradual Metaspace/classloader growth over days as new
+  # code paths are exercised. Eager init gives a predictable startup footprint
+  # and catches config errors at boot time.
+  jmx:
+    enabled: false
+
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:${MONGODB_URI}}
+      # Prevent startup crashes when existing prod data violates new unique indexes.
+      # We repair/ensure indexes after startup in code.
+      auto-index-creation: false
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST}
+      port: ${SPRING_DATA_REDIS_PORT}
+      password: ${SPRING_DATA_REDIS_PASSWORD}
+      timeout: 3000ms
+      repositories:
+        enabled: false
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX_ACTIVE}
+          max-idle: ${REDIS_POOL_MAX_IDLE}
+          min-idle: ${REDIS_POOL_MIN_IDLE}
+          max-wait: ${REDIS_POOL_MAX_WAIT}
+        shutdown-timeout: 200ms
+
+  mail:
+    brevo:
+      api-key: ${BREVO_API_KEY}
+      api-url: ${BREVO_API_URL}
+    sender:
+      email: ${BREVO_SENDER_EMAIL:noreply@blinxai.me}
+      support-email: ${BREVO_SUPPORT_EMAIL:support@blinxai.me}
+      account-email: ${BREVO_ACCOUNT_EMAIL:account@blinxai.me}
+      name: ${BREVO_SENDER_NAME:BlinxAI}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,heapdump,threaddump
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+    heapdump:
+      enabled: true
+    threaddump:
+      enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      sla:
+        http.server.requests: 50ms,100ms,200ms,500ms,1s,5s
+    tags:
+      application: blinxAI
+      env: ${DD_ENV:prod}
+      service: ${DD_SERVICE:blinxAI}
+      version: ${DD_VERSION:0.0.1}
+  statsd:
+    metrics:
+      export:
+        enabled: true
+        flavor: datadog
+        host: localhost
+        port: 8125
+
+# Disable Swagger in production to save ~30MB of memory
+springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED}
+  swagger-ui:
+    enabled: ${SPRINGDOC_ENABLED}
+
+server:
+  port: ${SERVER_PORT}
+  servlet:
+    context-path: /
+  # Tomcat tuned for low-memory environments
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_MAX_THREADS}
+      min-spare: ${SERVER_TOMCAT_MIN_SPARE_THREADS}
+    mbeanregistry:
+      enabled: false
+    connection-timeout: 5000ms
+    max-connections: 300
+    accept-count: 100
+    keep-alive-timeout: 20000ms
+  # Enable response compression to reduce bandwidth and latency
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,application/javascript
+    min-response-size: 1024
+
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: ${JWT_EXPIRATION}
+  refresh-expiration: ${JWT_REFRESH_EXPIRATION}
+
+app:
+  otp:
+    length: ${APP_OTP_LENGTH}
+    expiration: ${APP_OTP_EXPIRATION}
+  phone-prefix: ${APP_PHONE_PREFIX}
+  sms:
+    enabled: ${APP_SMS_ENABLED}
+    provider: ${APP_SMS_PROVIDER}
+    twilio:
+      account-sid: ${TWILIO_ACCOUNT_SID}
+      auth-token: ${TWILIO_AUTH_TOKEN}
+      from-number: ${TWILIO_FROM_NUMBER}
+
+  oauth2:
+    google:
+      client-id: ${GOOGLE_CLIENT_ID}
+      client-secret: ${GOOGLE_CLIENT_SECRET}
+      redirect-uri: ${GOOGLE_REDIRECT_URI}
+      encryption-password: ${GOOGLE_OAUTH_ENCRYPTION_PASSWORD}
+      encryption-salt: ${GOOGLE_OAUTH_ENCRYPTION_SALT}
+      default-redirect-uri: ${GOOGLE_OAUTH_DEFAULT_REDIRECT_URI}
+      error-redirect-uri: ${GOOGLE_OAUTH_ERROR_REDIRECT_URI}
+      scopes:
+        - email
+        - profile
+        - https://www.googleapis.com/auth/calendar.events
+        - https://www.googleapis.com/auth/gmail.readonly
+        - https://www.googleapis.com/auth/gmail.send
+      allowed-frontend-origins:
+        - https://blinx-app.netlify.app
+        - https://blinxai.me
+        - https://www.blinxai.me
+
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:https://blinxai.me,https://www.blinxai.me,https://blinx-app.netlify.app}
+  frontend-url: ${APP_FRONTEND_URL:https://blinxai.me}
+  cookie:
+    domain: ${APP_COOKIE_DOMAIN:blinxai.me}
+
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    global:
+      max-requests: ${RATE_LIMIT_GLOBAL_MAX:120}
+      window-seconds: ${RATE_LIMIT_GLOBAL_WINDOW:60}
+    auth:
+      max-requests: ${RATE_LIMIT_AUTH_MAX:5}
+      window-seconds: ${RATE_LIMIT_AUTH_WINDOW:60}
+    ai:
+      max-requests: ${RATE_LIMIT_AI_MAX:20}
+      window-seconds: ${RATE_LIMIT_AI_WINDOW:60}
+    search:
+      max-requests: ${RATE_LIMIT_SEARCH_MAX:20}
+      window-seconds: ${RATE_LIMIT_SEARCH_WINDOW:60}
+    calls:
+      max-requests: ${RATE_LIMIT_CALLS_MAX:30}
+      window-seconds: ${RATE_LIMIT_CALLS_WINDOW:60}
+    email:
+      max-requests: ${RATE_LIMIT_EMAIL_MAX:3}
+      window-seconds: ${RATE_LIMIT_EMAIL_WINDOW:60}
+    message-send:
+      max-requests: ${RATE_LIMIT_MSG_SEND_MAX:30}
+      window-seconds: ${RATE_LIMIT_MSG_SEND_WINDOW:60}
+
+api:
+  server:
+    # Here I have to use service DNS or public URL instead of localhost
+    url: ${API_SERVER_URL}
+
+ai:
+  provider: ${AI_PROVIDER}
+  api-key: ${AI_API_KEY}
+  base-url: ${AI_BASE_URL}
+  model: ${AI_MODEL}
+
+web:
+  search:
+    api-key: ${WEB_SEARCH_API_KEY}
+    cache:
+      ttl:
+        seconds: ${WEB_SEARCH_CACHE_TTL_SECONDS}
+    timeout:
+      seconds: ${WEB_SEARCH_TIMEOUT_SECONDS}
+
+logging:
+  pattern:
+    console: "{\"timestamp\":\"%d{yyyy-MM-dd'T'HH:mm:ss.SSS}\",\"level\":\"%level\",\"logger\":\"%logger{36}\",\"correlationId\":\"%X{correlationId}\",\"message\":\"%msg\"}%n"
+  level:
+    root: WARN
+    com.blink.chatservice: INFO
+    org.springframework.web: INFO
+    org.springframework.web.socket.config: INFO
+    org.springframework.web.socket.messaging: INFO
+    org.springframework.messaging.simp.broker: INFO
+    org.apache.catalina.core: INFO
+    io.lettuce.core: INFO
+    org.mongodb.driver: INFO
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      aiService:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+      aiAnalysisService:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+      aiIncognitoService:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+      newsService:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 15s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10

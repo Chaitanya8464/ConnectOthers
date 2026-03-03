@@ -1,0 +1,409 @@
+package com.blink.chatservice.mcp.tool;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class WebSearchTool implements McpTool {
+
+    private static final int MAX_QUERY_LENGTH = 500;
+    private static final int MAX_RETRIES = 2;
+    private static final long RETRY_DELAY_MS = 1000;
+    private static final int CIRCUIT_BREAKER_THRESHOLD = 5;
+    private static final long CIRCUIT_BREAKER_RESET_MS = 60000;
+    private static final int MAX_CACHE_ENTRIES = 80;
+    
+    @Qualifier("aiRestTemplate")
+    private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
+    
+    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
+    private final AtomicLong circuitOpenedAt = new AtomicLong(0);
+    private final Map<String, CachedResult> cache = new ConcurrentHashMap<>();
+    
+    @Value("${web.search.api-key:}")
+    private String serperApiKey;
+    
+    @Value("${web.search.cache.ttl.seconds:300}")
+    private long cacheTtlSeconds;
+
+    @Override
+    public String name() {
+        return "web_search";
+    }
+
+    @Override
+    public String description() {
+        return "Search the web for current info, latest news, trends, social profiles, facts — anything the user needs that isn't in local data.";
+    }
+
+    @Override
+    public Map<String, Object> inputSchema() {
+        return Map.of(
+                "type", "object",
+                "properties", Map.of(
+                        "query", Map.of(
+                                "type", "string",
+                                "description", "What to search for — keep it specific for better results",
+                                "maxLength", MAX_QUERY_LENGTH
+                        ),
+                        "type", Map.of(
+                                "type", "string",
+                                "description", "search (general) or news (recent articles)",
+                                "enum", List.of("search", "news"),
+                                "default", "search"
+                        ),
+                        "maxResults", Map.of(
+                                "type", "integer",
+                                "description", "Maximum results (default: 5, max: 10)",
+                                "default", 5,
+                                "minimum", 1,
+                                "maximum", 10
+                        )
+                ),
+                "required", List.of("query")
+        );
+    }
+
+    @Override
+    public Object execute(String userId, Map<String, Object> args) {
+        try {
+            String query = validateQuery(args.get("query"));
+            Integer maxResults = validateMaxResults(args.get("maxResults"));
+            String searchType = (args.get("type") != null) ? args.get("type").toString() : "search";
+            if (query.toLowerCase().contains("news") || query.toLowerCase().contains("latest")) {
+                searchType = "news";
+            }
+            
+            if (isCircuitOpen()) {
+                log.warn("Web search circuit breaker open. Returning fallback for: {}", query);
+                return createFallbackResponse(query);
+            }
+            
+            String cacheKey = searchType + ":" + query;
+            CachedResult cached = getFromCache(cacheKey);
+            if (cached != null) {
+                return createSuccessResponse(query, cached.results, searchType);
+            }
+            
+            var results = performSearch(query, maxResults, searchType);
+            
+            putInCache(cacheKey, results);
+            consecutiveFailures.set(0);
+            
+            return createSuccessResponse(query, results, searchType);
+            
+        } catch (Exception e) {
+            log.error("Web search failed: {}", e.getMessage());
+            int failures = consecutiveFailures.incrementAndGet();
+            if (failures >= CIRCUIT_BREAKER_THRESHOLD) {
+                circuitOpenedAt.set(System.currentTimeMillis());
+            }
+            
+            return createFallbackResponse(args.get("query") != null ? args.get("query").toString() : "search");
+        }
+    }
+
+    private String validateQuery(Object queryObj) {
+        if (queryObj == null || queryObj.toString().trim().isEmpty()) {
+            throw new IllegalArgumentException("Query is required");
+        }
+        
+        String query = queryObj.toString().trim();
+        if (query.length() > MAX_QUERY_LENGTH) {
+            query = query.substring(0, MAX_QUERY_LENGTH);
+        }
+        
+        return query;
+    }
+
+    private Integer validateMaxResults(Object obj) {
+        if (obj == null) return 5;
+        try {
+            int val = ((Number) obj).intValue();
+            return Math.min(Math.max(val, 1), 10);
+        } catch (Exception e) {
+            return 5;
+        }
+    }
+
+    private List<Map<String, Object>> performSearch(String query, int maxResults, String type) throws Exception {
+        if (serperApiKey != null && !serperApiKey.trim().isEmpty()) {
+            if ("news".equalsIgnoreCase(type)) {
+                return searchNewsWithSerper(query, maxResults);
+            }
+            return searchWithSerper(query, maxResults);
+        }
+        
+        return createSimulatedResults(query, maxResults);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> searchWithSerper(String query, int maxResults) throws Exception {
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("q", query);
+        requestBody.put("num", maxResults);
+        
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-API-KEY", serperApiKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        
+        HttpEntity<String> entity = new HttpEntity<>(
+                objectMapper.writeValueAsString(requestBody), 
+                headers
+        );
+        
+        // Use Serper's advanced search capability for better accuracy
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                "https://google.serper.dev/search", 
+                entity, 
+                String.class
+        );
+        
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            return parseSerperResponse(response.getBody(), maxResults);
+        }
+        
+        throw new RuntimeException("Serper API failed: " + response.getStatusCode());
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> searchNewsWithSerper(String query, int maxResults) throws Exception {
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("q", query);
+        requestBody.put("num", Math.min(maxResults * 2, 20)); // Search more to filter better
+        
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-API-KEY", serperApiKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        
+        HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(requestBody), headers);
+        
+        ResponseEntity<String> response = restTemplate.postForEntity("https://google.serper.dev/news", entity, String.class);
+        
+        if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+            Map<String, Object> body = objectMapper.readValue(response.getBody(), Map.class);
+            List<Map<String, Object>> newsResults = (List<Map<String, Object>>) body.get("news");
+            List<Map<String, Object>> results = new ArrayList<>();
+            
+            if (newsResults != null) {
+                for (Map<String, Object> item : newsResults) {
+                    if (results.size() >= maxResults) break;
+                    results.add(createResult(
+                        getString(item, "title"),
+                        getString(item, "snippet"),
+                        getString(item, "link"),
+                        getString(item, "source") + " (" + getString(item, "date") + ")"
+                    ));
+                }
+            }
+            return results;
+        }
+        throw new RuntimeException("Serper News API failed");
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseSerperResponse(String responseBody, int maxResults) 
+            throws JsonProcessingException {
+        
+        Map<String, Object> response = objectMapper.readValue(responseBody, Map.class);
+        List<Map<String, Object>> results = new ArrayList<>();
+        
+        // 1. Answer Box / Knowledge Graph (Highest Accuracy)
+        if (response.get("answerBox") instanceof Map) {
+            Map<?, ?> box = (Map<?, ?>) response.get("answerBox");
+            results.add(createResult(
+                getString(box, "title").isEmpty() ? "Direct Answer" : getString(box, "title"),
+                getString(box, "answer").isEmpty() ? getString(box, "snippet") : getString(box, "answer"),
+                getString(box, "link"), 
+                "Google Knowledge"
+            ));
+        }
+
+        // 2. Social Results (Specific for User Search like Instagram)
+        if (response.get("social") instanceof List) {
+            for (Object item : (List<?>) response.get("social")) {
+                if (results.size() >= maxResults) break;
+                if (item instanceof Map) {
+                    Map<?, ?> res = (Map<?, ?>) item;
+                    results.add(createResult(getString(res, "title"), getString(res, "snippet"), getString(res, "link"), "Social Profile"));
+                }
+            }
+        }
+        
+        // 3. Organic Results
+        Object organicObj = response.get("organic");
+        if (organicObj instanceof List) {
+            for (Object item : (List<?>) organicObj) {
+                if (results.size() >= maxResults) break;
+                if (item instanceof Map) {
+                    Map<?, ?> result = (Map<?, ?>) item;
+                    results.add(createResult(getString(result, "title"), getString(result, "snippet"), getString(result, "link"), "Web"));
+                }
+            }
+        }
+        
+        if (results.isEmpty()) {
+            throw new RuntimeException("No results found");
+        }
+        
+        return results;
+    }
+
+    private List<Map<String, Object>> createSimulatedResults(String query, int maxResults) {
+        List<Map<String, Object>> results = new ArrayList<>();
+        
+        String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+        
+        results.add(createResult(
+                "Search on Google",
+                "Get the latest real-time results for: " + query,
+                "https://www.google.com/search?q=" + encodedQuery,
+                "Google"
+        ));
+        
+        results.add(createResult(
+                "Search on DuckDuckGo",
+                "Privacy-focused search results for: " + query,
+                "https://duckduckgo.com/?q=" + encodedQuery,
+                "DuckDuckGo"
+        ));
+        
+        if (query.toLowerCase().contains("news") || query.toLowerCase().contains("latest")) {
+            results.add(createResult(
+                    "Google News",
+                    "Latest news articles about: " + query,
+                    "https://news.google.com/search?q=" + encodedQuery,
+                    "Google News"
+            ));
+        }
+        
+        return results.subList(0, Math.min(results.size(), maxResults));
+    }
+
+    private Map<String, Object> createResult(String title, String snippet, String url, String source) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("title", sanitize(title));
+        result.put("snippet", sanitize(snippet));
+        result.put("url", url);
+        result.put("source", sanitize(source));
+        return result;
+    }
+
+    private String getString(Map<?, ?> map, String key) {
+        Object val = map.get(key);
+        return val != null ? val.toString().trim() : "";
+    }
+
+    private String sanitize(String text) {
+        if (text == null) return "";
+        return text.trim().replaceAll("\\s+", " ");
+    }
+
+    private Map<String, Object> createSuccessResponse(String query, List<Map<String, Object>> results, String type) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("query", query);
+        response.put("results", results);
+        response.put("count", results.size());
+        response.put("timestamp", Instant.now().toString());
+        
+        String hint = "Individually analyze the snippets below. ";
+        if ("news".equalsIgnoreCase(type)) {
+            hint += "As this is a NEWS query, you MUST provide an industry-grade intelligence summary. ";
+            hint += "If the user asked for a high word count (e.g., 2000 words), use 'visit_website' on multiple sources to aggregate enough deep detail. ";
+        }
+        hint += "Include source URLs. ";
+        hint += "If snippets are insufficient, use 'visit_website' to get full content. ";
+        hint += "When saving via 'save_file', strip all markdown symbols (like '**') if the format is .txt or .json.";
+        
+        response.put("hint", hint);
+        return response;
+    }
+
+    private Map<String, Object> createFallbackResponse(String query) {
+        String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+        
+        var fallback = List.of(
+                createResult(
+                        "Search on Google",
+                        "Click to search for: " + query,
+                        "https://www.google.com/search?q=" + encodedQuery,
+                        "Google"
+                )
+        );
+        
+        return createSuccessResponse(query, fallback, "search");
+    }
+
+    private boolean isCircuitOpen() {
+        long openedAt = circuitOpenedAt.get();
+        if (openedAt == 0) return false;
+        
+        long elapsed = System.currentTimeMillis() - openedAt;
+        if (elapsed > CIRCUIT_BREAKER_RESET_MS) {
+            circuitOpenedAt.set(0);
+            consecutiveFailures.set(0);
+            return false;
+        }
+        
+        return true;
+    }
+
+    private CachedResult getFromCache(String query) {
+        CachedResult cached = cache.get(query);
+        if (cached == null) return null;
+        
+        long age = Duration.between(cached.timestamp, Instant.now()).getSeconds();
+        if (age > cacheTtlSeconds) {
+            cache.remove(query);
+            return null;
+        }
+        
+        return cached;
+    }
+
+    private void putInCache(String query, List<Map<String, Object>> results) {
+        // If approaching the cap, evict expired entries first instead of blindly clearing.
+        if (cache.size() >= MAX_CACHE_ENTRIES) {
+            evictExpiredCacheEntries();
+        }
+        // If still too large after eviction, drop oldest entries
+        if (cache.size() >= MAX_CACHE_ENTRIES) {
+            cache.clear();
+        }
+        cache.put(query, new CachedResult(results, Instant.now()));
+    }
+
+    // Periodic cleanup of expired search cache entries.
+    // Prevents the ConcurrentHashMap from retaining stale results indefinitely
+    // when cached queries are never read again (lazy eviction misses them).
+    @Scheduled(fixedRate = 300_000) // every 5 minutes
+    public void evictExpiredCacheEntries() {
+        if (cache.isEmpty()) return;
+        Instant cutoff = Instant.now().minusSeconds(cacheTtlSeconds);
+        cache.entrySet().removeIf(entry -> entry.getValue().timestamp.isBefore(cutoff));
+    }
+
+    private record CachedResult(List<Map<String, Object>> results, Instant timestamp) {
+    }
+}

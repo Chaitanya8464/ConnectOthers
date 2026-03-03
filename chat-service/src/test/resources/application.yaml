@@ -1,0 +1,83 @@
+# Test Configuration for Chat Service
+# This configuration is used for testing and mocks external dependencies
+
+spring:
+  application:
+    name: chat-service-test
+  
+  # Mail configuration
+  mail:
+    brevo:
+      api-key: test-api-key
+      api-url: http://localhost:8080/v3/smtp/email
+    sender:
+      email: test@blink.com
+      name: Blink
+  
+  # MongoDB configuration
+  data:
+    mongodb:
+      database: test-db
+      host: localhost
+      port: 27017
+    
+    # Redis configuration
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2000ms
+  
+  # Security configuration
+  security:
+    user:
+      name: test
+      password: test
+
+# Server configuration
+server:
+  port: 0  # Random port for tests
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-exception: true
+
+# AI configuration
+ai:
+  api-key: test-api-key
+  model: gpt-4o-mini
+  base-url: https://api.openai.com
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.blink.chatservice: DEBUG
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.mongodb.driver: WARN
+    org.springframework.data.mongodb: WARN
+
+# JWT configuration
+jwt:
+  secret: test-secret-key-for-testing-purposes-only-do-not-use-in-production
+  expiration: 3600000  # 1 hour
+  refresh-expiration: 86400000  # 24 hours
+
+# Application-specific test properties
+app:
+  name: Blink Test
+  frontend-url: http://localhost:3000
+  cors:
+    allowed-origins: http://localhost:5173
+  rate-limit:
+    enabled: false          # Disable rate limiting in tests by default
+  oauth2:
+    google:
+      client-id: test-client-id
+      client-secret: test-client-secret
+      redirect-uri: http://localhost:8080/callback
+      scopes: ["email", "profile"]
+      encryption-password: test-password
+      encryption-salt: 5c0744940b5c369b
+      default-redirect-uri: http://localhost:5173/chat
+      error-redirect-uri: http://localhost:5173/auth?error=true
