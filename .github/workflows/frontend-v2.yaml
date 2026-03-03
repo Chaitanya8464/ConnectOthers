@@ -1,0 +1,92 @@
+name: Frontend V2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend-v2/**"
+      - "Dockerfile.frontend-v2"
+      - "nginxv2.conf"
+      - ".github/workflows/frontend-v2.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend-v2/**"
+      - "Dockerfile.frontend-v2"
+      - ".github/workflows/frontend-v2.yaml"
+
+concurrency:
+  group: frontend-v2-build
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPO: raajkr07
+  IMAGE_NAME: blinx-frontend-v2
+  NODE_VERSION: "18"
+
+jobs:
+  build:
+    name: Build & Push to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set outputs
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      # ── Node + npm cache ──────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend-v2/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend-v2
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend-v2
+        env:
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL || 'https://api.blinxai.me' }}
+          VITE_WS_URL: ${{ secrets.VITE_WS_URL || 'wss://api.blinxai.me/ws' }}
+          VITE_APP_DOMAIN: blinxai.me
+          VITE_ENV: production
+        run: npm run build
+
+      # ── Docker context optimization ────────────────────────
+      - name: Prepare Docker context
+        run: |
+          mkdir -p docker-ctx
+          # Create the required directory structure inside the context
+          mkdir -p docker-ctx/frontend-v2
+          cp -r frontend-v2/dist docker-ctx/frontend-v2/dist
+          cp nginxv2.conf docker-ctx/nginxv2.conf
+          cp Dockerfile.frontend-v2.ci docker-ctx/Dockerfile
+
+      # ── Docker Build & Push ────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v5
+        with:
+          context: docker-ctx
+          file: docker-ctx/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_REPO }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

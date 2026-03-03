@@ -1,0 +1,126 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  NODE_VERSION: "18"
+  JAVA_VERSION: "17"
+
+jobs:
+  # ── Detect which components changed ───────────────────────
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      frontend-v1: ${{ steps.filter.outputs.frontend-v1 }}
+      frontend-v2: ${{ steps.filter.outputs.frontend-v2 }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend-v1:
+              - 'frontend-v1/**'
+            frontend-v2:
+              - 'frontend-v2/**'
+            backend:
+              - 'chat-service/**'
+
+  # ── Frontend V1 lint ──────────────────────────────────────
+  lint-frontend-v1:
+    name: "Lint: Frontend V1"
+    needs: changes
+    if: needs.changes.outputs.frontend-v1 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend-v1/package-lock.json
+      - run: npm ci
+        working-directory: frontend-v1
+      - run: npm run lint
+        working-directory: frontend-v1
+
+  # ── Frontend V2 lint + test ───────────────────────────────
+  lint-frontend-v2:
+    name: "Lint & Test: Frontend V2"
+    needs: changes
+    if: needs.changes.outputs.frontend-v2 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend-v2/package-lock.json
+      - run: npm ci
+        working-directory: frontend-v2
+      - run: npm run lint
+        working-directory: frontend-v2
+      - run: npm run test:ci
+        working-directory: frontend-v2
+
+  # ── Backend compile + test ────────────────────────────────
+  quality-backend:
+    name: "Quality: Backend"
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: chat-service/pom.xml
+
+      # Compile + run tests (fail fast)
+      - name: Build & Test
+        working-directory: chat-service
+        run: mvn -B -T 1C verify
+
+      # SpotBugs — free static analysis for Java
+      # Runs on compiled bytecode, very fast
+      - name: SpotBugs analysis
+        working-directory: chat-service
+        run: mvn -B com.github.spotbugs:spotbugs-maven-plugin:4.8.6.6:check
+        continue-on-error: true
+
+  # ── PR title validation (conventional commits) ────────────
+  pr-validation:
+    name: PR Title Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Validate PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            chore
+            ci
+          requireScope: false
