@@ -264,9 +264,9 @@ I'm a full-stack developer with a strong interest in building and deploying appl
 
 Along the way, I began learning DevOps. both to support the project and, realistically, to remain useful in an era increasingly powered by AI.
 
-- **LinkedIn**: www.linkedin.com/in/raajkumar07
-- **Email**: rajkumar07.dev@example.com
-- **Portfolio**: raajkumar.in
+- **LinkedIn**: www.linkedin.com/in/chaitanya-verma-
+- **Email**: chaitanyaa.dev@example.com
+- **Portfolio**: https://chiatanyaport.netlify.app/
 
 ## 🙏 Acknowledgments
 
