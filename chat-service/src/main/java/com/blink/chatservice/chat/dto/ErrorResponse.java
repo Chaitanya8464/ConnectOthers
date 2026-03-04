@@ -16,7 +16,7 @@ public class ErrorResponse {
         this.message =message;
     }
 
-    public String ErrorResponse(String message) {
+    public String getErrorMessage(String message) {
         return message;
     }
 }
