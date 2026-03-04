@@ -1,0 +1,5 @@
+# Domain redirect: old Netlify subdomain → custom domain
+https://blinx-app.netlify.app/* https://blinxai.me/:splat 301!
+
+# SPA fallback: all routes serve index.html for client-side routing
+/* /index.html 200
