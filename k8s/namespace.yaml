@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blinx-chat
+  labels:
+    name: blinx-chat
+    app: blinx-chat

@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chat-service-secret
+  namespace: blink-chat
+  labels:
+    app: chat-service
+type: Opaque
+data:
+  # JWT configuration
+  JWT_SECRET: <BASE64_ENCODED_JWT_SECRET>
+
+  # MongoDB connection
+  MONGODB_URI: <BASE64_ENCODED_MONGODB_URI>
+
+  # Redis configuration
+  REDIS_HOST: <BASE64_ENCODED_REDIS_HOST>
+  REDIS_PORT: <BASE64_ENCODED_REDIS_PORT>
+  REDIS_USERNAME: <BASE64_ENCODED_REDIS_USERNAME>
+  REDIS_PASSWORD: <BASE64_ENCODED_REDIS_PASSWORD>
+
+  # Email (SMTP / Email provider)
+  SPRING_MAIL_USERNAME: <BASE64_ENCODED_EMAIL_USERNAME>
+  SPRING_MAIL_PASSWORD: <BASE64_ENCODED_EMAIL_PASSWORD>
+
+  # Twilio SMS configuration
+  TWILIO_ACCOUNT_SID: <BASE64_ENCODED_TWILIO_ACCOUNT_SID>
+  TWILIO_AUTH_TOKEN: <BASE64_ENCODED_TWILIO_AUTH_TOKEN>
+
+  # AI / External API keys
+  AI_API_KEY: <BASE64_ENCODED_AI_API_KEY>
